@@ -1,18 +1,18 @@
 
-#Three-Tier Book Review Application on AWS
+# 📚 Three-Tier Architecture: Book Review Application Manual Deployment on AWS
 
-**Document status:** Draft — Deployment in Progress  
+**Document status:** Draft : Deployment in Progress  
 **Deployment method:** AWS Management Console and CLI  
 **Architecture:** Three-tier (Web, App, Database)  
 **Database:** Amazon RDS for MySQL, Multi-AZ with read replica  
 **Prepared by:** Samkeliso Dube  
-**AWS Region:** ```us-east-1``` 
+**AWS Region:** `us-east-1`  
 **Upstream source:** `pravinmishraaws/book-review-app`  
 **Deployment type:** Manual
 
 ---
 
-## Book Review Deployment: Table of Contents
+## Table of Contents
 
 1. [Purpose](#1-purpose)
 2. [Scope](#2-scope)
@@ -36,7 +36,7 @@
 
 This document provides the step-by-step procedure for manually deploying the Book Review application on AWS. It records the infrastructure configuration, application deployment, validation, troubleshooting, and evidence collection for the three-tier architecture (Web, App, and Database), using a public Application Load Balancer, an internal Application Load Balancer, and Amazon RDS for MySQL with Multi-AZ and a read replica.
 
-The steps are written as they are performed, and the commands and values reflect the final working configuration. Issues encountered are recorded in  `TROUBLESHOOTING.md`.
+The steps are written as they are performed, and the commands and values reflect the final working configuration. Issues encountered during deployment are recorded in Section 13, Troubleshooting Log.
 
 Each deployment phase is completed and verified before moving to the next phase.
 
@@ -59,14 +59,26 @@ Terraform, Ansible, Docker, Kubernetes, and CI/CD are reserved for later project
 
 ## 3. Application Architecture
 
-### 3.1 Application components
+### 3.1 Application Components
 
-| Tier | Component | Port | Responsibility |
-|---|---|---:|---|
-| Web | Nginx | 80 | Receives HTTP requests from the public ALB, serves the frontend, and proxies `/api/` requests to the internal ALB |
-| Web | Next.js | 3000 | Serves the user interface, behind Nginx |
-| App | Node.js and Express | 3001 | Application API (`/api/users`, `/api/books`, `/api/reviews`), with Sequelize as the database access layer |
-| Database | MySQL on RDS | 3306 | Persistent data storage, Multi-AZ with read replica |
+| Tier | Component | Port | Reachable from | Responsibility |
+|---|---|---:|---|---|
+| Web | Nginx | 80 | Public ALB | Receives HTTP requests, serves the frontend, and proxies `/api/` requests to the internal ALB |
+| Web | Next.js | 3000 | Nginx on the same instance only | Serves the user interface |
+| App | Node.js and Express | 3001 | Internal ALB | Application API (`/api/users`, `/api/books`, `/api/reviews`), with Sequelize as the database access layer |
+| Database | MySQL on RDS | 3306 | App tier only | Persistent data storage, Multi-AZ with read replica |
+
+### 3.2 Request Flow
+
+```
+Browser
+  → Public ALB (port 80)
+    → Nginx on Web EC2 (port 80)
+      → Next.js (port 3000) for frontend pages
+      → Internal ALB (port 3001) for API requests
+        → Express on App EC2 (port 3001)
+          → RDS MySQL (port 3306)
+```
 
 ### 3.2 Traffic flow
 
@@ -81,24 +93,22 @@ through the three-tier application architecture.
 
 | Item | Finding |
 |---|---|
-| Frontend framework | Next.js 15.2.3 |
-| Frontend runtime | React ^19.0.0 |
+| Frontend framework | Next.js `15.2.3` |
+| Frontend runtime | React `^19.0.0` |
 | Frontend build | `npm run build` |
 | Frontend production start | `npm run start` |
 | Backend framework | Express 4 |
 | Backend entry point | `backend/src/server.js` |
-| Backend port | 3001 |
+| Backend port | `3001` |
 | Database library | Sequelize and MySQL2 |
 | Database name | `book_review_db` |
-| Database port | 3306 |
-| Backend health endpoint | `GET` / - returns an API-running message |
+| Database port | `3306` |
+| Backend health endpoint | `GET /` returns an API-running message |
 | API routes | `/api/users`, `/api/books`, `/api/reviews` |
 
-The backend currently uses Sequelize `sync({ alter: true })` and may seed sample data during startup. Review this behaviour before connecting to the persistent RDS database.
+**Database warning:** The backend currently uses Sequelize `sync({ alter: true })` and may seed sample data during startup. Do not run against the RDS database until this behaviour is reviewed. The `alter: true` option can modify existing table structures, potentially changing or removing columns.
 
-**Database warning**: Do not run against the RDS database until the sync behavior is reviewed. The `alter: true` option can modify existing table structures, potentially changing or removing columns.
-
-The local `.env` configuration must not be copied unchanged to AWS. Use secure production credentials and the RDS endpoint.
+**Configuration warning:** The local `.env` file must not be copied unchanged to AWS. Use secure production credentials and the RDS endpoint.
 
 ## 5. Network Design
 
@@ -109,24 +119,26 @@ The local `.env` configuration must not be copied unchanged to AWS. Use secure p
 | Component | Name | Configuration |
 |---|---|---|
 | VPC | `bookreview-vpc` | CIDR `10.0.0.0/16`, DNS resolution and DNS hostnames enabled |
-| Subnets | See table below | Two AZs, two subnets per tier |
+| Subnets | See Section 5.1 | Two AZs, two subnets per tier |
 | Internet Gateway | `bookreview-igw` | Attached to `bookreview-vpc` |
-| NAT Gateway | `bookreview-nat` | Public, in `bookreview-web-a`, with one Elastic IP owned by the gateway |
-| Route tables | See table below | One per tier |
-| Security groups | See table below | One per tier boundary |
+| NAT Gateway | `bookreview-nat` | Public, in `bookreview-web-a`, with an Elastic IP associated |
+| Route tables | See Section 5.2 | One per tier |
+| Security groups | See Section 5.3 | One per tier boundary |
+
+### 5.1 Subnets
 
 | Subnet | Name | CIDR | Availability Zone | Type |
 |---|---|---|---|---|
-| Web A | `bookreview-web-a` | `10.0.1.0/24` | `<AZ-1>` | Public |
-| Web B | `bookreview-web-b` | `10.0.2.0/24` | `<AZ-2>` | Public |
-| App A | `bookreview-app-a` | `10.0.11.0/24` | `<AZ-1>` | Private |
-| App B | `bookreview-app-b` | `10.0.12.0/24` | `<AZ-2>` | Private |
-| DB A | `bookreview-db-a` | `10.0.21.0/24` | `<AZ-1>` | Private |
-| DB B | `bookreview-db-b` | `10.0.22.0/24` | `<AZ-2>` | Private |
+| Web A | `bookreview-web-a` | `10.0.1.0/24` | `us-east-1a` | Public |
+| Web B | `bookreview-web-b` | `10.0.2.0/24` | `us-east-1b` | Public |
+| App A | `bookreview-app-a` | `10.0.11.0/24` | `us-east-1a` | Private |
+| App B | `bookreview-app-b` | `10.0.12.0/24` | `us-east-1b` | Private |
+| DB A | `bookreview-db-a` | `10.0.21.0/24` | `us-east-1a` | Private |
+| DB B | `bookreview-db-b` | `10.0.22.0/24` | `us-east-1b` | Private |
 
 Subnet ranges were checked against the course IP calculation sheet before creation. No ranges overlap within `10.0.0.0/16`.
 
-**Route tables**
+### 5.2 Route Tables
 
 | Route table | Associated subnets | Routes |
 |---|---|---|
@@ -136,29 +148,7 @@ Subnet ranges were checked against the course IP calculation sheet before creati
 
 The DB route table has no internet route. The database does not need outbound internet access.
 
-## 6. Design Decisions
-
-| Component | Decision |
-|---|---|
-| Architecture | Three-tier |
-| Public entry point | Internet-facing ALB, port 80 |
-| Web tier | Ubuntu EC2 in public subnets, Nginx and Next.js |
-| App entry point | Internal ALB, port 3001 |
-| App tier | Private Ubuntu EC2, Node.js and Express |
-| Database | Private Amazon RDS for MySQL |
-| RDS availability | Multi-AZ |
-| Read replica | One, single-AZ |
-| Auto Scaling Groups | Not used (single instance per tier, per the assignment) |
-| Elastic IPs | None on instances. The NAT Gateway uses one internally. |
-| NAT Gateway | Required for App tier outbound access (`npm install`, Git clone) |
-| HTTPS | Out of scope for this deployment stage |
-| Deployment method | Manual |
-
-**Cost note:** Multi-AZ, the read replica, the NAT Gateway, and two ALBs all bill while running. Keep the budget alert active and tear down the same day.
-
-**One technical clarification for implementation:** The NAT Gateway provides outbound internet access for private instances. It does not make the App EC2 instance publicly accessible.
-
-## 7. Security Groups
+### 5.3 Security Groups
 
 Create these security groups in `bookreview-vpc`. Outbound rules are left at the default (all traffic allowed).
 
@@ -170,22 +160,46 @@ Create these security groups in `bookreview-vpc`. Outbound rules are left at the
 | `bookreview-app-sg` | 3001 | `bookreview-alb-internal-sg` | Internal ALB to Express |
 | `bookreview-db-sg` | 3306 | `bookreview-app-sg` | Express to RDS |
 
-No security group allows port 22. Administrative access uses Session Manager (Appendix A).
+No security group allows port 22. Administrative access uses Session Manager, configured in Section 7.
+
+## 6. Deployment Design
+
+| Component | Decision |
+|---|---|
+| Architecture | Three-tier |
+| Public entry point | Internet-facing ALB, port 80 |
+| Web tier | Ubuntu EC2 in public subnets, Nginx and Next.js |
+| App entry point | Internal ALB, port 3001 |
+| App tier | Private Ubuntu EC2, Node.js and Express |
+| Database | Private Amazon RDS for MySQL |
+| RDS availability | Multi-AZ |
+| Read replica | One, single-AZ, from the Multi-AZ primary |
+| Auto Scaling Groups | Not used (single instance per tier) |
+| Elastic IPs | None on instances. The NAT Gateway uses one internally. |
+| NAT Gateway | Required for App tier outbound access (`npm install`, Git clone) |
+| HTTPS | Out of scope for this deployment stage |
+| Deployment method | Manual |
+
+**Cost note:** Multi-AZ, the read replica, the NAT Gateway, and two ALBs all bill while running.
+
+**Implementation note:** The NAT Gateway provides outbound internet access for private instances. It does not make the App EC2 instance publicly accessible.
+
+
 
 **Design notes**
 
 - The NAT Gateway serves both App subnets from one AZ. This is a cost-saving choice for this practice deployment, not a highly available design. If `bookreview-web-a` fails, the App tier loses outbound access. Traffic from App B also crosses AZs and can incur data transfer charges. A production design uses one NAT Gateway per AZ.
 - The database route table has no internet route.
 - 
-## 8. Deployment Procedure
+## 7. Manual AWS Infrastructure Deployment
 
-### Phase 1 — Preparation
+### Phase 1: Preparation
 
 1. Confirm the AWS Region.
 2. Confirm the source repository and commit to deploy.
 3. Check the AWS budget alert.
 4. Confirm the subnet CIDR plan.
-5. Confirm the assignment's database availability requirements.
+5. Confirm the RDS Multi-AZ and read replica design in Section 6.
 6. Confirm local environment files are excluded from Git.
 7. Select cost-appropriate EC2 and RDS instance sizes.
 
@@ -197,153 +211,542 @@ No security group allows port 22. Administrative access uses Session Manager (Ap
 
 **Status:** Not started.
 
-### Phase 2 — Create the VPC
+### Phase 2: Create the VPC
 
-1. Sign in to the AWS Management Console.
-2. Search for `VPC`.
-3. Open the VPC service.
-4. Select **Your VPCs**.
-5. Select **Create VPC**.
-6. Choose to create a VPC only.
-7. Enter `bookreview-vpc`.
-8. Enter CIDR `10.0.0.0/16`.
-9. Enable DNS resolution and DNS hostnames.
-10. Create the VPC.
+1. Sign in to the [AWS Management Console](https://aws.amazon.com/console/).
+2. Search for `VPC` and open the VPC service.
+3. Select **Your VPCs**, then select **Create VPC**.
+4. Choose **VPC only**.
+5. Enter the name `bookreview-vpc`.
+6. Enter the IPv4 CIDR `10.0.0.0/16`.
+7. Leave IPv6 as **No IPv6 CIDR block**, and tenancy as **Default**.
+8. Select **Create VPC**.
+9. Open `bookreview-vpc` from the VPC list.
+10. Select **Actions → Edit VPC settings**.
+11. Enable **DNS resolution** and **DNS hostnames**, then select **Save**.
+12. Confirm both settings show as enabled on the VPC details page.
 
-**Expected result:** The VPC is created and its CIDR is visible.
+**Expected result:** The VPC is created with CIDR `10.0.0.0/16`, and DNS resolution and DNS hostnames are both enabled.
 
 **Evidence:** `step01-vpc.png`
 
-**Status:** Not started.
+![VPC created with DNS settings enabled](images/bookreview-vpc.png)
 
-### Phase 3 — Create the six subnets
+### Phase 3: Create the six subnets
 
 1. Open **VPC → Subnets**.
 2. Select **Create subnet**.
 3. Select `bookreview-vpc`.
-4. Create the six subnets listed in Section 5.
-5. Select the appropriate Availability Zone for each subnet.
-6. Verify the CIDR ranges.
-7. Enable automatic public IPv4 assignment only on the Web subnets if required by the chosen access design.
+4. Create the six subnets:
+   - `bookreview-web-a`, `10.0.1.0/24`, `us-east-1a`, public
+   - `bookreview-web-b`, `10.0.2.0/24`, `us-east-1b`, public
+   - `bookreview-app-a`, `10.0.11.0/24`, `us-east-1a`, private
+   - `bookreview-app-b`, `10.0.12.0/24`, `us-east-1b`, private
+   - `bookreview-db-a`, `10.0.21.0/24`, `us-east-1a`, private
+   - `bookreview-db-b`, `10.0.22.0/24`, `us-east-1b`, private
+5. Verify the Availability Zone and CIDR range for each subnet.
+6. Keep auto-assign public IPv4 disabled on all subnets, including the Web subnets. Web instances are reached only through the public ALB.
 
-**Expected result:** Six subnets exist in the correct VPC.
+**Expected result:** Six subnets exist in `bookreview-vpc` with the correct Availability Zones and CIDR ranges.
 
 **Evidence:** `step02-subnets.png`
 
-**Status:** Not started.
+![VPC Subnets](images/bookreview-subnets.png)
 
-### Phase 4 — Internet Gateway and route tables
+### Phase 4: Internet Gateway, NAT Gateway, and route tables
 
 1. Open **VPC → Internet Gateways**.
-2. Create `bookreview-igw`.
-3. Attach it to `bookreview-vpc`.
-4. Open **Route Tables**.
-5. Create `bookreview-public-rt`.
-6. Add route `0.0.0.0/0` pointing to the Internet Gateway.
-7. Associate both Web subnets.
-8. Create `bookreview-private-app-rt` and associate both App subnets.
-9. Create `bookreview-private-db-rt` and associate both DB subnets.
-10. Keep the DB route table local-only.
-11. Decide how the private App instance will obtain packages and source code before adding any NAT route.
+2. Create `bookreview-igw` and attach it to `bookreview-vpc`.
+3. Open **VPC → Elastic IPs** and allocate an Elastic IP named `bookreview-nat-eip`.
+4. Open **VPC → NAT Gateways** and select **Create NAT gateway**:
+   - Name: `bookreview-nat`
+   - Availability mode: **Zonal**
+   - Subnet: `bookreview-web-a`
+   - Connectivity type: **Public**
+   - Elastic IP allocation ID: `bookreview-nat-eip`. Do not select **Allocate Elastic IP** on this form.
+   - Leave **Additional settings** and **Tags** as they are, then select **Create NAT gateway**.
+   - Wait until the NAT Gateway shows **Available**, then record its Elastic IP address in the resource register.
+1. Open **VPC → Route Tables** and create `bookreview-public-rt`.
+2. Add the route `0.0.0.0/0` pointing to `bookreview-igw`.
+3. Associate `bookreview-web-a` and `bookreview-web-b` with `bookreview-public-rt`.
+4. Create `bookreview-private-app-rt`.
+9. Add the route `0.0.0.0/0` pointing to `bookreview-nat`.
+10. Associate `bookreview-app-a` and `bookreview-app-b` with `bookreview-private-app-rt`.
+11. Create `bookreview-private-db-rt`.
+12. Associate `bookreview-db-a` and `bookreview-db-b` with `bookreview-private-db-rt`. Do not add any default route.
 
-**Expected result:** Public Web subnets have internet routing. Private App and DB subnets have no direct Internet Gateway route.
+**Expected result:** Web subnets route to the Internet Gateway. App subnets route to the NAT Gateway. DB subnets have only the local VPC route.
 
 **Evidence:**
 - `step03-igw.png`
-- `step04-route-tables.png`
+  ![VPC Subnets](images/bookreview-igw.png)
 
-**Status:** Not started.
+- `step04-nat-gateway.png`
+  ![bookreview-nat-gateway](images/bookreview-nat-gw.png)
 
-### Phase 5 — Security groups
+- `step05-route-tables.png`
+  ![bookreview-route-tables](images/bookreview-rts.png)
+
+
+
+### Phase 5: Security groups
 
 1. Open **EC2 → Security Groups**.
-2. Create the five security groups in Section 7.
-3. Select the Book Review VPC for each group.
-4. Configure the inbound rules.
-5. Use security-group references for tier-to-tier communication.
+2. Create the five security groups listed in Section 5.3:
+   - `bookreview-alb-public-sg`
+   - `bookreview-web-sg`
+   - `bookreview-alb-internal-sg`
+   - `bookreview-app-sg`
+   - `bookreview-db-sg`
+3. Select `bookreview-vpc` for each group.
+4. Configure the inbound rules exactly as listed in Section 5.3.
+5. Use security group references, not IP addresses, for tier-to-tier rules.
 6. Review all inbound rules.
-7. Confirm only the public ALB accepts public HTTP traffic.
+7. Confirm only `bookreview-alb-public-sg` accepts traffic from `0.0.0.0/0`.
 
 **Expected result:** Each tier only accepts the traffic it requires.
 
-**Evidence:** `step05-security-groups.png`
+**Evidence:** `step06-security-groups.png`
 
-**Status:** Not started.
+ ![bookreview-security-groups](images/bookreview-sg.png)
 
-### Phase 6 — Create RDS for MySQL
+### Phase 6: Create RDS for MySQL
 
-1. Open **RDS → Subnet groups**.
-2. Select **Create DB subnet group**.
-3. Create `bookreview-db-subnets`.
-4. Select both private DB subnets.
-5. Open **RDS → Databases → Create database**.
-6. Select MySQL.
-7. Select an appropriate engine version and instance class.
-8. Configure the database identifier.
-9. Configure secure master credentials.
-10. Select `bookreview-db-subnets`.
-11. Set public access to **No**.
-12. Attach `db-sg`.
-13. Select the approved availability option.
-14. Create the database.
-15. Wait for the database to become Available.
-16. Record its endpoint and port without recording credentials.
+**Pre-step: DB subnet group**
 
-Create a dedicated application database user. Do not use the RDS master account in the application.
+1. Open **RDS → Subnet groups** and select **Create DB subnet group**.
+2. Name it `bookreview-db-subnets`.
+3. Select `bookreview-vpc`.
+4. Add `bookreview-db-a` (`us-east-1a`) and `bookreview-db-b` (`us-east-1b`).
+5. Select **Create**.
 
-**Expected result:** RDS is Available and private.
+**Create the database**
+
+6. Open **RDS → Databases** and select **Create database**.
+
+**Choose a database creation method**
+
+7. Select **Full configuration**.
+
+**Engine options**
+
+8. Engine type: **MySQL**.
+
+**Templates**
+
+9. Select **Dev/Test** or leave the default. Do not select **Production**, since it sets defaults that cost more than this lab needs.
+
+**Availability and durability**
+
+10. Deployment option: **Multi-AZ DB instance deployment (2 instances)**. Do not select the 3-instance Multi-AZ DB cluster option.
+
+**Settings**
+
+11. Edition: **MySQL Community**.
+12. Engine version: select the latest **MySQL 8.4** version offered. Leave **Enable RDS Extended Support** unchecked.
+13. DB instance identifier: `bookreview-db`.
+
+**Credentials settings**
+14. Master username: `admin`.
+15. Credentials management: **Self managed**.
+16. Enter a strong master password and confirm it. RDS requires at least 8 printable characters and doesn't allow `/`, `"`, `@`, or spaces. Store the password in a password manager. Do not record it in this document or the repository.
+
+
+**Instance configuration**
+
+18. DB instance class: `db.t4g.micro`, a burstable class that fits a lab. If it isn't offered for your engine version, choose the smallest burstable class listed.
+
+**Storage**
+
+19. Storage type: **General Purpose SSD (gp3)**. Do not use Provisioned IOPS SSD (io2).
+20. Allocated storage: `20` GiB, the minimum for gp3.
+21. Expand **Additional storage configuration**. Leave storage autoscaling disabled.
+
+**Connectivity**
+
+22. Compute resource: **Don't connect to an EC2 compute resource**. The security groups in Section 5.3 are configured manually, so the console should not change them.
+23. Virtual private cloud (VPC): select **`bookreview-vpc`**, not the default VPC.
+24. DB subnet group: select **`bookreview-db-subnets`**.
+25. Public access: **No**.
+26. VPC security group: select **Choose existing**, then select **`bookreview-db-sg`**. Remove the `default` group.
+27. Certificate authority: leave the default.
+
+**Additional configuration**
+
+28. Leave **Database options**, **Encryption**, and **Backup** at their defaults.
+29. **Deletion protection:** this is turned on by default. Leave it on while the database is running, and turn it off in Phase 14 before teardown, or the delete will fail.
+
+**Monitoring**
+
+30. Database Insights: **Standard**. Advanced adds charges.
+31. Enhanced Monitoring: leave **off** for this lab.
+32. Log exports: leave all unchecked for this lab.
+
+**Additional configuration**
+
+33. Expand **Additional configuration**.
+34. Initial database name: `book_review_db`. This matches the database name in the source code. If you leave it blank, RDS creates no database.
+35. DB parameter group: leave `default.mysql8.4`.
+39. Option group: leave `default:mysql-8-4`.
+40. Encryption: leave **Enable encryption** on, with the KMS key `aws/rds (default)`.
+41. Backup: leave **Enable automated backup** on. Set **Backup retention period** to `1` day to limit backup storage cost. The estimate excludes backup storage, so keep this short for the lab.
+42. Backup window: leave **No preference**.
+43. Backup replication: leave **Enable replication in another AWS Region** off.
+44. Auto minor version upgrade: leave on.
+45. Maintenance window: leave **No preference**.
+46. Deletion protection: turn it **on**, as set in step 29. Turn it off in Phase 14 before deleting the database.
+
+**Create the database**
+
+34. Select **Create database**.
+35. Wait until the status is **Available**. Multi-AZ provisioning can take 10 to 20 minutes.
+36. Record the endpoint and port. Do not record credentials.
+37. Create a dedicated application database user. Do not use the `admin` master account in the application.
+
+**Create the read replica**
+
+38. Select `bookreview-db`, then select **Actions → Create read replica**.
+**Create the read replica**
+
+44. Tick the checkbox next to `bookreview-db`, then select **Actions → Create read replica**. Do not select **Create Aurora read replica**.
+45. Source DB instance identifier: `bookreview-db`. This is filled in automatically.
+46. DB instance identifier: `bookreview-db-replica`.
+47. DB instance class: **Burstable classes**, then `db.t3.micro`, the same as the source.
+48. Destination Region: **US East (N. Virginia)**.
+49. Storage type: **General Purpose SSD (gp3)**, with allocated storage `20` GiB, the same as the source.
+50. Deployment option: **Single-AZ DB instance deployment (1 instance)**. The replica is a single copy, so Multi-AZ is not selected here.
+51. DB subnet group: `bookreview-db-subnets`.
+52. Public access: **Not publicly accessible**.
+53. Existing VPC security groups: `bookreview-db-sg`.
+54. Database authentication: **Password authentication**.
+55. Monitoring: Database Insights **Standard**. Enhanced Monitoring stays off, and log exports stay unchecked.
+56. Encryption: leave encryption on with the default KMS key. The replica must use the same encryption setting as the source. Select the default key from the list rather than entering an ARN.
+57. Auto minor version upgrade: leave on.
+58. Deletion protection: turn on. Turn it off in Phase 14 before teardown.
+59. Tags: add `Name` = `bookreview-db-replica`.
+60. Select **Create read replica**, then wait until the status is **Available**.
+61. Confirm the **Region & AZ** column shows the replica in `us-east-1b`. If it's in another zone, record that in the Deployment Log. Either zone works, so it doesn't need to be recreated.
+
+**Expected result:** `bookreview-db-replica` is Available, private, and in the same VPC as the primary.
 
 **Evidence:**
-- `step06-rds-configuration.png`
-- `step07-rds-available.png`
+- `step07-rds-configuration.png`
+   ![bookreview-database](images/bookreview-database.png)
+- `step08-rds-available.png`
+   ![bookreview-available-status](images/bookreview-available-status.png)
+- `step09-read-replica.png`
+  ![bookreview-read-replica](images/bookreview-read-replicas.png)
 
-**Status:** Not started.
 
-### Phase 7 — Deploy the App tier
 
-1. Open **EC2 → Instances → Launch instances**.
-2. Select an Ubuntu Server AMI.
-3. Name the instance `bookreview-app`.
-4. Select an appropriate instance type.
-5. Select `bookreview-vpc`.
-6. Select a private App subnet.
-7. Do not assign a public IP.
-8. Attach `app-sg`.
-9. Configure the approved access method.
-10. Launch the instance.
-11. Access it using the approved private management method.
-12. Install the required Node.js runtime and Git.
-13. Transfer or clone the pinned source code.
-14. Change to the `backend` directory.
-15. Install dependencies using the lock file.
-16. Create the production environment configuration securely.
-17. Configure the RDS endpoint, database name, username and password.
-18. Set `PORT=3001`.
-19. Configure a strong JWT secret and allowed frontend origin.
-20. Review database SSL settings and Sequelize startup behaviour.
-21. Start the backend using the verified process-management approach.
-22. Test the root endpoint locally.
+**Expected result:** The primary is Multi-AZ and Available, the read replica is Available, and both are private.
 
-Backend entry point:
+### Phase 7: Bastion access, key pair and SSH rules
 
-```bash
-node src/server.js
-```
+**What we are doing:** We are creating the administrative path into the private App tier. This includes a key pair, a small jump host, and the SSH rules that connect them.
 
-Expected health response:
+**Why we are doing it:** The App instance is in a private subnet with no public IP, so it can't be reached from the internet. The bastion is the only instance that accepts SSH from outside, and only from our IP. From the bastion, we SSH to the App instance over its private IP. This access is needed before the App is deployed in Phase 9.
 
-```text
-Book Review API is running...
-```
+**Access decision:** Option 1, bastion host. Session Manager is not used in this deployment.
 
-**Expected result:** Backend is running on port 3001 and can authenticate to RDS.
+**Steps:**
+
+1. Open **EC2 → Key pairs** and create `bookreview-key` (RSA, `.pem`). Download the file and store it outside the repository.
+2. Create the security group `bookreview-bastion-sg` in `bookreview-vpc`:
+   - Inbound: port 22, source = your current public IP (`x.x.x.x/32`)
+   - Outbound: default
+3. Edit `bookreview-app-sg` and add an inbound rule: port 22, source = `bookreview-bastion-sg`.
+4. Launch `bookreview-bastion`:
+   - AMI: Ubuntu Server 24.04 LTS
+   - Instance type: `t3.micro`
+   - Key pair: `bookreview-key`
+   - VPC: `bookreview-vpc`
+   - Subnet: `bookreview-web-a` (`us-east-1a`)
+   - Auto-assign public IP: **Enable** for this instance only, overriding the subnet setting
+   - Security group: `bookreview-bastion-sg`
+5. Wait until the bastion shows **running**, then record its public IP and private IP.
+6. Connect to the bastion from your machine over SSH to confirm access.
+
+**Expected result:** `bookreview-bastion` is running with a public IP, and only your IP can reach port 22 on it. `bookreview-app-sg` accepts port 22 only from `bookreview-bastion-sg`.
 
 **Evidence:**
-- `step08-app-instance.png`
-- `step09-backend-health.png`
-- `step10-database-connectivity.png`
+- `step10-bastion.png`
+- `step11-app-sg-rules.png`
 
 **Status:** Not started.
+
+### Phase 8: Launch the App EC2
+
+**What we are doing:** We are launching `bookreview-app`, the instance that runs the Node.js and Express backend.
+
+**Why we are doing it:** The App tier must exist before its backend can be deployed in Phase 9 and before the internal ALB can register it in Phase 10.
+
+**Steps:**
+
+1. Launch an EC2 instance named `bookreview-app`:
+   - AMI: Ubuntu Server 24.04 LTS
+   - Instance type: `t3.micro`
+   - Key pair: `bookreview-key`
+   - VPC: `bookreview-vpc`
+   - Subnet: `bookreview-app-a` (`us-east-1a`)
+   - Auto-assign public IP: **Disable**
+   - Security group: `bookreview-app-sg`
+   - IAM instance profile: none
+2. Wait until the instance shows **running** and passes its status checks.
+3. Record the instance ID and private IP. Do not record a public IP, since there isn't one.
+
+**Expected result:** `bookreview-app` is running in `bookreview-app-a` with a private IP only.
+
+**Evidence:** `step12-app-instance.png`
+
+**Status:** Not started.
+
+### Phase 9: Deploy the backend and verify database connectivity
+
+**What we are doing:** We are installing Node.js, cloning the pinned source code, configuring Express to connect to RDS, and starting the backend on port 3001.
+
+**Why we are doing it:** The internal ALB can only be healthy if Express is already running. Verifying the database connection here means any database problem is found before the load balancer is added, so it's easier to troubleshoot.
+
+**Prerequisites:**
+- `bookreview-db` is Available, and the application database user from Phase 6 exists.
+- `bookreview-private-app-rt` routes `0.0.0.0/0` to `bookreview-nat`, and the NAT Gateway is Available. The App instance needs this for `npm install` and `git clone`.
+- The bastion from Phase 7 is running.
+
+**Steps:**
+
+1. Connect to `bookreview-bastion`, then SSH from the bastion to the App instance's private IP:
+
+   ```bash
+   ssh -i <KEY_NAME>.pem -J ubuntu@<BASTION_PUBLIC_IP> ubuntu@<APP_PRIVATE_IP>
+   ```
+
+2. Confirm you are on the App instance with `hostname` and `ip addr show`.
+3. Install Node.js, npm, Git and the MySQL client.
+4. Clone the upstream repository and check out the pinned commit recorded in Phase 1.
+5. Change to the `backend` directory and install dependencies with `npm ci`.
+6. Create the backend `.env` file on the server. Set the database host to the RDS endpoint, the database name to `book_review_db`, the port to `3306`, and the username and password to the dedicated application user. Do not use the `admin` master account, and do not copy a local `.env` from your machine.
+7. Before the first start, review the `sync({ alter: true })` behaviour in Section 4. Do not start the backend against `bookreview-db` until this behaviour is confirmed safe for a new database.
+8. Test the database connection directly with the MySQL client using the application user. Confirm the login succeeds.
+9. Start the backend on port `3001`.
+10. From the App instance, test the health endpoint:
+
+    ```bash
+    curl -i http://localhost:3001/
+    ```
+
+11. Confirm the response is the API-running message with HTTP 200.
+12. Keep the process running with a service manager such as `systemd`, so it survives a logout.
+
+**Expected result:** Express responds on port 3001 with HTTP 200 on `/`, and the application user can connect to `bookreview-db`.
+
+**Evidence:**
+- `step13-backend-health.png`
+- `step14-db-connection.png`
+
+**Status:** Not started.
+
+### Phase 10: Create the internal ALB and register the App EC2
+
+**What we are doing:** We are creating the target group `bookreview-app-tg`, the internal ALB `bookreview-internal-alb`, and registering `bookreview-app` as the target.
+
+**Why we are doing it:** The Web tier's Nginx sends `/api/` requests to this load balancer. The ALB gives Nginx a single private address for the App tier, and it checks the health of the App instance before sending traffic to it.
+
+**Steps:**
+
+1. Open **EC2 → Target Groups** and create `bookreview-app-tg`:
+   - Target type: Instances
+   - Protocol and port: HTTP, `3001`
+   - VPC: `bookreview-vpc`
+   - Health check path: `/`
+2. Register `bookreview-app` on port `3001` and include it as a pending target.
+3. Open **EC2 → Load Balancers** and create an Application Load Balancer:
+   - Name: `bookreview-internal-alb`
+   - Scheme: **Internal**
+   - VPC: `bookreview-vpc`
+   - Subnets: `bookreview-app-a` and `bookreview-app-b`
+   - Security group: `bookreview-alb-internal-sg`
+4. Add an HTTP listener on port `3001` and forward it to `bookreview-app-tg`.
+5. Create the load balancer and wait until it is **Active**.
+6. Wait until the App target shows **healthy** in `bookreview-app-tg`.
+7. Record the internal ALB DNS name. Nginx needs this in Phase 11.
+
+**Expected result:** `bookreview-internal-alb` is Active, and `bookreview-app` is a healthy target on port 3001.
+
+**Evidence:**
+- `step15-app-tg.png`
+- `step16-internal-alb.png`
+- `step17-app-healthy.png`
+
+**Status:** Not started.
+
+### Phase 11: Launch the Web EC2 and deploy Next.js and Nginx
+
+**What we are doing:** We are launching `bookreview-web`, installing Node.js and Nginx, building and running the Next.js frontend on port 3000, and configuring Nginx to route traffic.
+
+**Why we are doing it:** The Web tier is the only layer the public ALB can reach. Nginx serves the frontend pages and forwards `/api/` requests to the internal ALB, so the browser never calls the private App tier directly.
+
+**Steps:**
+
+1. Launch `bookreview-web`:
+   - AMI: Ubuntu Server 24.04 LTS
+   - Instance type: `t3.micro`
+   - Key pair: `bookreview-key`
+   - VPC: `bookreview-vpc`
+   - Subnet: `bookreview-web-a` (`us-east-1a`)
+   - Auto-assign public IP: **Enable**. The instance needs outbound internet for `apt`, `npm` and `git`. Section 5.3 still limits inbound traffic to port 80 from the public ALB.
+   - Security group: `bookreview-web-sg`
+2. Connect through `bookreview-bastion` to the Web instance's private IP. Confirm you are on the correct host.
+3. Install Node.js, npm, Git and Nginx.
+4. Clone the upstream repository at the pinned commit.
+5. Change to the `frontend` directory and install dependencies with `npm ci`.
+6. Verify the frontend API configuration in the source before building. Confirm that API calls go to the same-origin path `/api/`, and not directly to the internal ALB.
+7. Build the application with `npm run build`.
+8. Start Next.js on port `3000` with `npm run start`, and keep it running with `systemd`.
+9. Configure Nginx:
+   - `/` forwards to `127.0.0.1:3000`
+   - `/api/` forwards to the internal ALB DNS name on port `3001`
+10. Test the configuration and reload Nginx:
+
+    ```bash
+    sudo nginx -t
+    sudo systemctl reload nginx
+    ```
+
+11. From the Web instance, test both paths:
+
+    ```bash
+    curl -I http://127.0.0.1/
+    curl -i http://127.0.0.1/api/books
+    ```
+
+**Expected result:** The frontend responds through Nginx on port 80, and `/api/books` returns the backend's response through the internal ALB.
+
+**Evidence:**
+- `step18-web-instance.png`
+- `step19-nginx-config.png`
+- `step20-web-local-test.png`
+
+**Status:** Not started.
+
+### Phase 12: Create the public ALB and register the Web EC2
+
+**What we are doing:** We are creating the target group `bookreview-web-tg`, the internet-facing ALB `bookreview-public-alb`, and registering `bookreview-web` as the target.
+
+**Why we are doing it:** The public ALB is the only entry point for users on the internet. It sends requests to Nginx on the Web instance and checks that Nginx is healthy first.
+
+**Steps:**
+
+1. Open **EC2 → Target Groups** and create `bookreview-web-tg`:
+   - Target type: Instances
+   - Protocol and port: HTTP, `80`
+   - VPC: `bookreview-vpc`
+   - Health check path: `/`
+2. Register `bookreview-web` on port `80`.
+3. Open **EC2 → Load Balancers** and create an Application Load Balancer:
+   - Name: `bookreview-public-alb`
+   - Scheme: **Internet-facing**
+   - VPC: `bookreview-vpc`
+   - Subnets: `bookreview-web-a` and `bookreview-web-b`
+   - Security group: `bookreview-alb-public-sg`
+4. Add an HTTP listener on port `80` and forward it to `bookreview-web-tg`.
+5. Create the load balancer and wait until it is **Active**.
+6. Wait until the Web target shows **healthy** in `bookreview-web-tg`.
+7. Record the public ALB DNS name.
+
+**Expected result:** `bookreview-public-alb` is Active and internet-facing, and `bookreview-web` is a healthy target on port 80.
+
+**Evidence:**
+- `step21-web-tg.png`
+- `step22-public-alb.png`
+- `step23-web-healthy.png`
+
+**Status:** Not started.
+
+### Phase 13: End-to-end validation
+
+**What we are doing:** We are testing the complete application through the public ALB, using the acceptance tests in Section 9.
+
+**Why we are doing it:** Each tier was tested on its own in Phases 9 to 12. This phase confirms that the tiers work together, from the browser through to the database.
+
+**Steps:**
+
+1. Open the public ALB DNS name in a browser and confirm the frontend loads.
+2. Work through the acceptance tests in Section 9, in order, and record the actual result of each.
+3. Check the health of both target groups.
+4. Confirm the database is reached only from the App tier, and that no instance other than the bastion has port 22 open to your IP.
+5. Record any failures in the Troubleshooting Log (Section 13), and fix one at a time.
+
+**Expected result:** All tests in Section 9 pass, and the evidence checklist in Section 10 is complete.
+
+**Evidence:**
+- `step24-e2e-frontend.png`
+- `step25-e2e-review.png`
+
+**Status:** Not started.
+### Phase 7: Create the EC2 instances
+
+**What we are doing:** We are launching the two application instances, `bookreview-web` and `bookreview-app`, so the load balancers have servers to route to.
+
+**Why we are doing it:** Each load balancer forwards traffic to instances in a target group. The instances must exist before they can be registered in Phase 8.
+
+**Steps:**
+
+1. Open **EC2 → Key pairs** and create `bookreview-key` (RSA, `.pem`). Download the file and store it outside the repository.
+2. Launch `bookreview-app`:
+   - AMI: Ubuntu Server 24.04 LTS
+   - Instance type: `t3.micro`
+   - Key pair: `bookreview-key`
+   - VPC: `bookreview-vpc`
+   - Subnet: `bookreview-app-a` (`us-east-1a`)
+   - Auto-assign public IP: **Disable**
+   - Security group: `bookreview-app-sg`
+3. Launch `bookreview-web`:
+   - AMI, instance type, key pair and VPC: as above
+   - Subnet: `bookreview-web-a` (`us-east-1a`)
+   - Auto-assign public IP: **Enable**
+   - Security group: `bookreview-web-sg`
+4. Wait until both instances show **running**.
+5. Record the instance IDs and private IPs in the resource register.
+
+**Expected result:** `bookreview-app` is running with no public IP, and `bookreview-web` is running in the public subnet.
+
+**Evidence:**
+- `step06-app-instance.png`
+- `step07-web-instance.png`
+
+**Status:** Not started.
+
+**Evidence:** `step10-bastion.png`
+
+**Status:** Not started.
+
+**Design impact:** Section 5.3 states that no security group allows port 22. If this option is chosen, update that line to say port 22 is open only from `bookreview-bastion-sg` to the App tier, and only from your IP to the bastion.
+
+#### Option 2: AWS Systems Manager Session Manager
+
+**What it is:** You connect to instances through the AWS console or CLI using IAM permissions. No inbound port is opened, and no key pair is needed. The instances need an IAM role that allows the SSM agent to communicate with Systems Manager.
+
+**Steps:**
+
+1. Open **IAM → Roles** and select **Create role**.
+2. Select **AWS service**, then choose **EC2**.
+3. Attach the managed policy `AmazonSSMManagedInstanceCore`.
+4. Name the role `bookreview-ssm-role` and create it.
+5. Confirm the role exists and shows `AmazonSSMManagedInstanceCore` attached.
+6. In Phase 9, attach `bookreview-ssm-role` as the instance profile of each EC2 instance.
+7. After the App instance is running, open **Systems Manager → Session Manager → Start session** and select it to confirm access.
+
+**Expected result:** `bookreview-ssm-role` exists, and the App instance appears as a managed node in Session Manager.
+
+**Evidence:**
+- `step10-ssm-role.png`
+- `step11-session-manager.png`
+
+**Status:** Not started.
+
+**Design impact:** Section 5.3 remains unchanged. No port 22 is opened, and no bastion is created.
+
+**Note on the selected option:** The bastion and the IAM role are never created together. Delete the steps for the option you did not choose before publishing this section.
 
 ### Phase 8 — Create the Internal ALB
 
@@ -532,7 +935,18 @@ Record the teardown date and capture evidence. Deleting resources does not remov
 
 | Date/time | Symptom | Evidence checked | Root cause | Fix | Retest result |
 |---|---|---|---|---|---|
-| | | | | | |
+### T-01: Create read replica greyed out
+
+| Field | Detail |
+|---|---|
+| Date/time | |
+| Symptom | In **RDS → Databases**, the **Create read replica** action was greyed out for `bookreview-db`. |
+| Symptom detail | The Actions menu also showed **Turn on backups** and greyed out **Create read replica** and **Promote**. |
+| Evidence checked | Database status was **Available**, Engine was **MySQL Community**, Multi-AZ was **Yes**. The Modify page showed **Backup retention period: 0 days**. |
+| Root cause | Automated backups were disabled (retention 0 days). RDS does not allow a read replica from a source database without backups. |
+| Fix | Modified `bookreview-db`, set **Backup retention period** to **1 day**, and applied the change immediately. |
+| Retest result | Pending. Confirm **Create read replica** is enabled after the change, then create `bookreview-db-replica`. |
+| Lesson | Set backup retention during creation in Phase 6, step 32. Do not set it to 0. |
 
 ## 14. AWS Resource Register
 
